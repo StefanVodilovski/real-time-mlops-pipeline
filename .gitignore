@@ -1,0 +1,3 @@
+.venv
+/data
+real_time_predict_service/checkpoint_kafka_predictions
