@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json
+from pyspark.sql.functions import col, from_json, struct
 import os
 from pyspark.sql.types import StructType, StructField, FloatType
 from data_transform import *
@@ -18,14 +18,7 @@ kafka_topic_input = "health_data"
 kafka_topic_output = "health_data_predicted"
 checkpoint_path = "./checkpoint_kafka_predictions"
 
-df = (
-    spark.readStream.format("kafka")
-    .option("kafka.bootstrap.servers", kafka_broker)
-    .option("subscribe", kafka_topic_input)
-    .load()
-)
 
-# Define the schema for the JSON data
 json_schema = StructType(
     [
         StructField("HighBP", FloatType(), True),
@@ -53,32 +46,39 @@ json_schema = StructType(
 )
 
 df = (
-    df.selectExpr("CAST(key AS STRING)", "CAST(value AS STRING) AS value")
+    spark.readStream.format("kafka")
+    .option("kafka.bootstrap.servers", kafka_broker)
+    .option("subscribe", kafka_topic_input)
+    .load()
+    .selectExpr("CAST(value AS STRING)")
     .withColumn("json_data", from_json(col("value"), json_schema))
-    .select("key", "json_data.*")
+    .select("json_data.*")
 )
+
 
 path = "../models/best_model"
 model = LogisticRegressionModel.load(path)
 
+
 df = clean_dataframe(df)
 df = transform_dataframe(df)
-
 
 predictions = model.transform(df)
 
 
 predictions = predictions.withColumnRenamed("prediction", "label")
-predictions = predictions.selectExpr("to_json(struct(*)) AS value")
+predictions = predictions.select(
+    struct(col("features"), col("label")).alias("value")
+).selectExpr("to_json(struct(*)) AS value")
+
+# debug_query = predictions.writeStream.format("console").outputMode("append").start()
 
 
 query = (
     predictions.writeStream.format("kafka")
     .option("kafka.bootstrap.servers", kafka_broker)
     .option("topic", kafka_topic_output)
-    .option(
-        "checkpointLocation", checkpoint_path
-    )  # Checkpointing is required for Kafka output
+    .option("checkpointLocation", checkpoint_path)
     .outputMode("append")
     .start()
 )
